@@ -1,13 +1,62 @@
-import type { LevelConfig } from './types';
+import type { LevelConfig, ResolvedLevelConfig } from './types';
 import { levels, getLevelById } from '../levels';
+import {
+  DEFAULT_PHYSICS,
+  DEFAULT_WATER_PARTICLE,
+  DEFAULT_DRAWING,
+  DEFAULT_RENDER,
+  DEFAULT_STARS,
+} from './levelDefaults';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)
+  );
+}
+
+function deepMerge<T extends object>(base: T, overrides: Partial<T> | undefined): T {
+  if (!overrides) return { ...base };
+  const result: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const key of Object.keys(overrides as Record<string, unknown>)) {
+    const baseVal = result[key];
+    const overVal = (overrides as Record<string, unknown>)[key];
+    if (isPlainObject(baseVal) && isPlainObject(overVal)) {
+      result[key] = deepMerge(baseVal as Record<string, unknown>, overVal as Record<string, unknown>);
+    } else if (overVal !== undefined) {
+      result[key] = overVal;
+    }
+  }
+  return result as T;
+}
+
+export function resolveLevelConfig(level: LevelConfig): ResolvedLevelConfig {
+  return {
+    ...level,
+    physics: deepMerge(DEFAULT_PHYSICS, level.physics),
+    waterParticle: deepMerge(DEFAULT_WATER_PARTICLE, level.waterParticle),
+    drawing: deepMerge(DEFAULT_DRAWING, level.drawing),
+    render: deepMerge(DEFAULT_RENDER, level.render),
+    stars: deepMerge(DEFAULT_STARS, level.stars),
+  };
+}
 
 export class LevelLoader {
   static getAllLevels(): LevelConfig[] {
     return levels;
   }
 
+  static getAllResolved(): ResolvedLevelConfig[] {
+    return levels.map(resolveLevelConfig);
+  }
+
   static getLevel(id: string): LevelConfig | undefined {
     return getLevelById(id);
+  }
+
+  static getResolved(id: string): ResolvedLevelConfig | undefined {
+    const lv = getLevelById(id);
+    if (!lv) return undefined;
+    return resolveLevelConfig(lv);
   }
 
   static getLevelCount(): number {
@@ -42,6 +91,27 @@ export class LevelLoader {
     if (config.holdTime <= 0) errors.push('holdTime 必须为正数');
     if (config.timeLimit !== undefined && config.timeLimit <= 0) {
       errors.push('timeLimit 必须为正数');
+    }
+    if (config.obstacles) {
+      for (let i = 0; i < config.obstacles.length; i++) {
+        const o = config.obstacles[i];
+        if (!o.type) errors.push(`障碍 ${i} 缺少 type`);
+        switch (o.type) {
+          case 'rect':
+            if (!o.width || o.width <= 0) errors.push(`障碍 ${i} 缺少 width`);
+            if (!o.height || o.height <= 0) errors.push(`障碍 ${i} 缺少 height`);
+            break;
+          case 'circle':
+            if (!o.radius || o.radius <= 0) errors.push(`障碍 ${i} 缺少 radius`);
+            break;
+          case 'polygon':
+            if (!o.vertices || o.vertices.length < 3) errors.push(`障碍 ${i} 缺少 vertices`);
+            break;
+          case 'line':
+            if (!o.points || o.points.length < 2) errors.push(`障碍 ${i} 缺少 points`);
+            break;
+        }
+      }
     }
     return errors;
   }

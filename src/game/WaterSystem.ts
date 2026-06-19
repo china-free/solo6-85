@@ -1,24 +1,29 @@
-import type { LevelConfig, WaterSourceConfig, Vec2 } from './types';
+import type { ResolvedLevelConfig, WaterSourceConfig, Vec2, LevelConfig } from './types';
 import { PhysicsEngine } from './PhysicsEngine';
+import { resolveLevelConfig } from './LevelLoader';
 
 interface ParticleInfo {
   id: number;
   createdAt: number;
 }
 
+const BOUND_MARGIN = 200;
+
 export class WaterSystem {
   private engine: PhysicsEngine;
-  private level: LevelConfig;
+  private level: ResolvedLevelConfig;
   private source: WaterSourceConfig;
   private particles: ParticleInfo[];
   private spawnAccumulator: number;
   private spawnedTotal: number;
   private onParticleRemoved?: (id: number) => void;
 
-  constructor(engine: PhysicsEngine, level: LevelConfig) {
+  constructor(engine: PhysicsEngine, level: LevelConfig | ResolvedLevelConfig) {
     this.engine = engine;
-    this.level = level;
-    this.source = level.waterSource;
+    this.level = 'physics' in level && level.physics !== undefined
+      ? (level as ResolvedLevelConfig)
+      : resolveLevelConfig(level as LevelConfig);
+    this.source = this.level.waterSource;
     this.particles = [];
     this.spawnAccumulator = 0;
     this.spawnedTotal = 0;
@@ -30,9 +35,7 @@ export class WaterSystem {
 
   reset() {
     const ids = this.engine.removeAllWaterParticles();
-    for (const id of ids) {
-      this.onParticleRemoved?.(id);
-    }
+    for (const id of ids) this.onParticleRemoved?.(id);
     this.particles = [];
     this.spawnAccumulator = 0;
     this.spawnedTotal = 0;
@@ -51,17 +54,15 @@ export class WaterSystem {
     if (this.particles.length >= this.source.maxParticles) {
       this.removeOldestParticle();
     }
-    const jitterX = (Math.random() - 0.5) * 12;
-    const jitterY = (Math.random() - 0.5) * 4;
+    const wp = this.level.waterParticle;
+    const jitterX = (Math.random() - 0.5) * 2 * wp.spawnJitterX;
+    const jitterY = (Math.random() - 0.5) * 2 * wp.spawnJitterY;
     const id = this.engine.createWaterParticle(
       this.source.x + jitterX,
       this.source.y + jitterY,
       this.source.particleRadius
     );
-    this.particles.push({
-      id,
-      createdAt: performance.now(),
-    });
+    this.particles.push({ id, createdAt: performance.now() });
     this.spawnedTotal++;
   }
 
@@ -73,9 +74,9 @@ export class WaterSystem {
   }
 
   private cleanupOutOfBounds() {
-    const maxY = this.level.worldHeight + 200;
-    const minX = -200;
-    const maxX = this.level.worldWidth + 200;
+    const maxY = this.level.worldHeight + BOUND_MARGIN;
+    const minX = -BOUND_MARGIN;
+    const maxX = this.level.worldWidth + BOUND_MARGIN;
     const waterBodies = this.engine.getWaterParticles();
     const toRemove: number[] = [];
 
@@ -93,8 +94,7 @@ export class WaterSystem {
     }
   }
 
-  removeParticlesOutsideContainers() {
-  }
+  removeParticlesOutsideContainers() {}
 
   getParticlePositions(): Map<number, Vec2> {
     const positions = new Map<number, Vec2>();

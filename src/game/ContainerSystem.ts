@@ -1,5 +1,6 @@
-import type { LevelConfig, ContainerConfig, ContainerProgress, Vec2 } from './types';
+import type { LevelConfig, ContainerConfig, ContainerProgress, ResolvedLevelConfig } from './types';
 import { PhysicsEngine } from './PhysicsEngine';
+import { resolveLevelConfig } from './LevelLoader';
 
 export interface ContainerState {
   id: string;
@@ -10,16 +11,18 @@ export interface ContainerState {
 
 export class ContainerSystem {
   private engine: PhysicsEngine;
-  private level: LevelConfig;
+  private level: ResolvedLevelConfig;
   private containers: Map<string, ContainerState>;
   private holdTime: number;
   private allFilled: boolean;
   private allFilledTimer: number;
 
-  constructor(engine: PhysicsEngine, level: LevelConfig) {
+  constructor(engine: PhysicsEngine, level: LevelConfig | ResolvedLevelConfig) {
     this.engine = engine;
-    this.level = level;
-    this.holdTime = level.holdTime;
+    this.level = 'physics' in level && level.physics !== undefined
+      ? (level as ResolvedLevelConfig)
+      : resolveLevelConfig(level as LevelConfig);
+    this.holdTime = this.level.holdTime;
     this.containers = new Map();
     this.allFilled = false;
     this.allFilledTimer = 0;
@@ -62,59 +65,40 @@ export class ContainerSystem {
       const { config } = state;
       const halfW = config.width / 2;
       const halfH = config.height / 2;
-      const innerTop = config.y - halfH + config.wallThickness;
       const innerLeft = config.x - halfW + config.wallThickness;
       const innerRight = config.x + halfW - config.wallThickness;
       const innerBottom = config.y + halfH - config.wallThickness;
-      const midLine = config.y - halfH + config.height * 0.25;
+      const thresholdRatio = config.fillThresholdRatio ?? 0.25;
+      const innerTop = config.y - halfH + config.height * thresholdRatio;
 
       const currentSet = new Set<number>();
-
       for (const [id, body] of waterBodies.entries()) {
         const px = body.position.x;
         const py = body.position.y;
-        if (
-          px > innerLeft &&
-          px < innerRight &&
-          py > midLine &&
-          py < innerBottom
-        ) {
+        if (px > innerLeft && px < innerRight && py > innerTop && py < innerBottom) {
           currentSet.add(id);
         }
       }
 
       const kept = new Set<number>();
       for (const pid of state.filledParticles) {
-        if (currentSet.has(pid) && activeParticleIds.has(pid)) {
-          kept.add(pid);
-        }
+        if (currentSet.has(pid) && activeParticleIds.has(pid)) kept.add(pid);
       }
       for (const pid of currentSet) {
-        if (activeParticleIds.has(pid)) {
-          kept.add(pid);
-        }
+        if (activeParticleIds.has(pid)) kept.add(pid);
       }
       state.filledParticles = kept;
       state.progress.current = kept.size;
 
-      const wasFilled = state.progress.filled;
       state.progress.filled = kept.size >= config.targetCount;
-
       if (state.progress.filled) {
-        state.progress.holdTimer = Math.min(
-          this.holdTime,
-          state.progress.holdTimer + dtSeconds
-        );
+        state.progress.holdTimer = Math.min(this.holdTime, state.progress.holdTimer + dtSeconds);
       } else {
         state.progress.holdTimer = Math.max(0, state.progress.holdTimer - dtSeconds * 2);
       }
     }
 
-    const prevAllFilled = this.allFilled;
-    this.allFilled = Array.from(this.containers.values()).every(
-      (s) => s.progress.filled
-    );
-
+    this.allFilled = Array.from(this.containers.values()).every((s) => s.progress.filled);
     if (this.allFilled) {
       this.allFilledTimer = Math.min(this.holdTime, this.allFilledTimer + dtSeconds);
     } else {

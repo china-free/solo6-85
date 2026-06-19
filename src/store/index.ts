@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import type { GameStatus, ToolType, ContainerProgress, LevelProgress } from '../game/types';
+import type { GameStatus, ToolType, ContainerProgress, LevelProgress, StarsConfig } from '../game/types';
 import { levels, getLevelById, getNextLevelId, getLevelIndex } from '../levels';
+import { resolveLevelConfig } from '../game/LevelLoader';
 
 interface LevelStore {
   progress: Record<string, LevelProgress>;
@@ -166,14 +167,40 @@ export const useGameStore = create<GameStoreState & GameStoreActions>((set, get)
   fail: (reason) => set({ status: 'failed', failReason: reason }),
 }));
 
-function calculateStars(elapsedTime: number, inkUsed: number, inkLimit: number): number {
-  const inkRatio = inkUsed / inkLimit;
-  let stars = 1;
-  if (inkRatio <= 0.7) stars = 2;
-  if (inkRatio <= 0.5 && elapsedTime < 60) stars = 3;
+function calculateStars(
+  elapsedTime: number,
+  inkUsed: number,
+  inkLimit: number,
+  starsConfig?: StarsConfig
+): number {
+  const cfg = starsConfig;
+  if (!cfg) return 1;
+  const inkRatio = inkUsed / Math.max(1, inkLimit);
+  let stars = cfg.one.threshold;
+  if (
+    (cfg.two.maxInkRatio === undefined || inkRatio <= cfg.two.maxInkRatio) &&
+    (cfg.two.maxTimeSeconds === undefined || elapsedTime <= cfg.two.maxTimeSeconds)
+  ) {
+    stars = cfg.two.threshold;
+  }
+  if (
+    (cfg.three.maxInkRatio === undefined || inkRatio <= cfg.three.maxInkRatio) &&
+    (cfg.three.maxTimeSeconds === undefined || elapsedTime <= cfg.three.maxTimeSeconds)
+  ) {
+    stars = cfg.three.threshold;
+  }
   return stars;
 }
 
-export function computeStars(elapsedTime: number, inkUsed: number, inkLimit: number): number {
-  return calculateStars(elapsedTime, inkUsed, inkLimit);
+export function computeStars(
+  elapsedTime: number,
+  inkUsed: number,
+  inkLimit: number,
+  levelId?: string
+): number {
+  if (!levelId) return calculateStars(elapsedTime, inkUsed, inkLimit);
+  const raw = getLevelById(levelId);
+  if (!raw) return calculateStars(elapsedTime, inkUsed, inkLimit);
+  const resolved = resolveLevelConfig(raw);
+  return calculateStars(elapsedTime, inkUsed, inkLimit, resolved.stars);
 }

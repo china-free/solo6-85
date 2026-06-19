@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { LevelConfig, Vec2 } from '../../game/types';
+import type { LevelConfig, ResolvedLevelConfig, Vec2 } from '../../game/types';
 import { PhysicsEngine } from '../../game/PhysicsEngine';
 import { WaterSystem } from '../../game/WaterSystem';
 import { DrawingSystem } from '../../game/DrawingSystem';
@@ -7,6 +7,7 @@ import { ContainerSystem } from '../../game/ContainerSystem';
 import { useGameStore, computeStars } from '../../store';
 import { useLevelStore } from '../../store';
 import { getLevelById } from '../../levels';
+import { resolveLevelConfig } from '../../game/LevelLoader';
 
 interface GameCanvasProps {
   levelId: string;
@@ -22,6 +23,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   const elapsedRef = useRef<number>(0);
+  const resolvedRef = useRef<ResolvedLevelConfig | null>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 1000, h: 600 });
   const [previewPoints, setPreviewPoints] = useState<Vec2[]>([]);
   const [, forceRerender] = useState(0);
@@ -39,23 +41,29 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
   const fail = useGameStore((s) => s.fail);
   const completeLevelProgress = useLevelStore((s) => s.completeLevel);
 
-  const initSystems = useCallback((level: LevelConfig) => {
-    if (engineRef.current) {
-      engineRef.current.destroy();
-    }
+  const getResolved = useCallback((): ResolvedLevelConfig | null => {
+    if (resolvedRef.current) return resolvedRef.current;
+    const raw = getLevelById(levelId);
+    if (!raw) return null;
+    resolvedRef.current = resolveLevelConfig(raw);
+    return resolvedRef.current;
+  }, [levelId]);
+
+  const initSystems = useCallback((level: LevelConfig, resolved: ResolvedLevelConfig) => {
+    if (engineRef.current) engineRef.current.destroy();
     const engine = new PhysicsEngine(level);
     engine.buildLevel();
     engine.start();
     engineRef.current = engine;
 
-    const water = new WaterSystem(engine, level);
+    const water = new WaterSystem(engine, resolved);
     waterRef.current = water;
 
-    const drawing = new DrawingSystem(engine, level.inkLimit);
+    const drawing = new DrawingSystem(engine, resolved);
     drawing.setTool(tool);
     drawingRef.current = drawing;
 
-    const containerSys = new ContainerSystem(engine, level);
+    const containerSys = new ContainerSystem(engine, resolved);
     containerSysRef.current = containerSys;
 
     elapsedRef.current = 0;
@@ -68,13 +76,16 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
       fail('关卡不存在');
       return;
     }
+    const resolved = resolveLevelConfig(level);
+    resolvedRef.current = resolved;
     startLevel(levelId);
     setCanvasSize({ w: level.worldWidth, h: level.worldHeight });
-    initSystems(level);
+    initSystems(level, resolved);
 
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (engineRef.current) engineRef.current.destroy();
+      resolvedRef.current = null;
     };
   }, [levelId, initSystems, startLevel, fail]);
 
@@ -86,10 +97,10 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
     const handleResize = () => {
       const container = containerRef.current;
       if (!container) return;
-      const rect = container.getBoundingClientRect();
       const level = getLevelById(levelId);
       if (!level) return;
       const aspect = level.worldWidth / level.worldHeight;
+      const rect = container.getBoundingClientRect();
       let w = rect.width;
       let h = w / aspect;
       if (h > rect.height) {
@@ -190,7 +201,8 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
           const stars = computeStars(
             elapsedRef.current,
             drawingRef.current?.getInkUsed() ?? 0,
-            level.inkLimit
+            level.inkLimit,
+            levelId
           );
           completeLevelProgress(levelId, stars, elapsedRef.current, drawingRef.current?.getInkUsed() ?? 0);
           completeWithResult(stars);
@@ -212,8 +224,10 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
   const resetGame = useCallback(() => {
     const level = getLevelById(levelId);
     if (!level) return;
+    const resolved = resolveLevelConfig(level);
+    resolvedRef.current = resolved;
     startLevel(levelId);
-    initSystems(level);
+    initSystems(level, resolved);
   }, [levelId, initSystems, startLevel]);
 
   useEffect(() => {
@@ -227,13 +241,13 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
   }, [resetGame]);
 
   const render = (canvas: HTMLCanvasElement) => {
-    const level = getLevelById(levelId);
-    if (!level) return;
+    const resolved = getResolved();
+    if (!resolved) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const logicalW = level.worldWidth;
-    const logicalH = level.worldHeight;
+    const logicalW = resolved.worldWidth;
+    const logicalH = resolved.worldHeight;
     const dpr = window.devicePixelRatio || 1;
     if (canvas.width !== canvasSize.w * dpr || canvas.height !== canvasSize.h * dpr) {
       canvas.width = canvasSize.w * dpr;
@@ -245,26 +259,29 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
     const scaleY = (canvasSize.h * dpr) / logicalH;
     ctx.scale(scaleX, scaleY);
 
+    const r = resolved.render;
     const bgGrad = ctx.createLinearGradient(0, 0, 0, logicalH);
-    bgGrad.addColorStop(0, '#f0f9ff');
-    bgGrad.addColorStop(1, '#e0f2fe');
+    bgGrad.addColorStop(0, r.backgroundColorStart);
+    bgGrad.addColorStop(1, r.backgroundColorEnd);
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, logicalW, logicalH);
 
     drawGrid(ctx, logicalW, logicalH);
-    drawObstacles(ctx);
-    drawContainers(ctx);
-    drawWaterParticles(ctx);
-    drawSource(ctx);
-    drawDrawnSegments(ctx);
-    drawPreviewStroke(ctx);
-    drawHoldIndicator(ctx);
+    drawObstacles(ctx, resolved);
+    drawContainers(ctx, resolved);
+    drawWaterParticles(ctx, resolved);
+    drawSource(ctx, resolved);
+    drawDrawnSegments(ctx, resolved);
+    drawPreviewStroke(ctx, resolved);
+    drawHoldIndicator(ctx, resolved);
   };
 
   const drawGrid = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
-    ctx.strokeStyle = 'rgba(14, 165, 233, 0.06)';
+    const r = getResolved()?.render;
+    if (!r) return;
+    ctx.strokeStyle = `rgba(14, 165, 233, ${r.gridOpacity})`;
     ctx.lineWidth = 1;
-    const grid = 50;
+    const grid = r.gridSize;
     for (let x = 0; x <= w; x += grid) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
@@ -279,10 +296,8 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
     }
   };
 
-  const drawObstacles = (ctx: CanvasRenderingContext2D) => {
-    const level = getLevelById(levelId);
-    if (!level) return;
-    for (const obs of level.obstacles) {
+  const drawObstacles = (ctx: CanvasRenderingContext2D, resolved: ResolvedLevelConfig) => {
+    for (const obs of resolved.obstacles) {
       const color = obs.color || '#475569';
       ctx.fillStyle = color;
       ctx.strokeStyle = shadeColor(color, -20);
@@ -329,11 +344,10 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
     }
   };
 
-  const drawContainers = (ctx: CanvasRenderingContext2D) => {
-    const level = getLevelById(levelId);
-    if (!level) return;
+  const drawContainers = (ctx: CanvasRenderingContext2D, resolved: ResolvedLevelConfig) => {
+    const r = resolved.render;
     const containerSys = containerSysRef.current;
-    for (const c of level.containers) {
+    for (const c of resolved.containers) {
       const prog = containerSys?.getContainerProgress(c.id);
       const current = prog?.current ?? 0;
       const target = prog?.target ?? c.targetCount;
@@ -355,8 +369,8 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
 
       if (ratio > 0) {
         const waterGrad = ctx.createLinearGradient(0, fillY, 0, innerBottom);
-        waterGrad.addColorStop(0, '#38bdf8');
-        waterGrad.addColorStop(1, '#0284c7');
+        waterGrad.addColorStop(0, r.containerWaterStart);
+        waterGrad.addColorStop(1, r.containerWaterEnd);
         ctx.fillStyle = waterGrad;
         ctx.beginPath();
         ctx.moveTo(innerLeft, innerBottom);
@@ -374,7 +388,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
         ctx.closePath();
         ctx.fill();
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.strokeStyle = r.containerWaterHighlightColor;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         for (let i = 0; i <= waveSegments; i++) {
@@ -390,32 +404,31 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
       ctx.lineWidth = c.wallThickness;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
+      ctx.globalAlpha = r.containerWallOpacity;
       ctx.beginPath();
       ctx.moveTo(c.x - halfW, c.y - halfH - c.wallThickness / 2);
       ctx.lineTo(c.x - halfW, c.y + halfH);
       ctx.lineTo(c.x + halfW, c.y + halfH);
       ctx.lineTo(c.x + halfW, c.y - halfH - c.wallThickness / 2);
       ctx.stroke();
+      ctx.globalAlpha = 1;
 
       ctx.fillStyle = c.color;
       ctx.font = 'bold 14px "Noto Sans SC", sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(
-        `${current}/${target}`,
-        c.x,
-        c.y + halfH + 28
-      );
+      ctx.fillText(`${current}/${target}`, c.x, c.y + halfH + 28);
       ctx.restore();
     }
   };
 
-  const drawWaterParticles = (ctx: CanvasRenderingContext2D) => {
+  const drawWaterParticles = (ctx: CanvasRenderingContext2D, resolved: ResolvedLevelConfig) => {
     const water = waterRef.current;
     if (!water) return;
     const positions = water.getParticlePositions();
     const radius = water.getParticleRadius();
+    const r = resolved.render;
 
-    for (const [id, pos] of positions.entries()) {
+    for (const [, pos] of positions.entries()) {
       const grad = ctx.createRadialGradient(
         pos.x - radius * 0.3,
         pos.y - radius * 0.3,
@@ -424,38 +437,37 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
         pos.y,
         radius
       );
-      grad.addColorStop(0, '#bae6fd');
-      grad.addColorStop(0.6, '#38bdf8');
-      grad.addColorStop(1, '#0284c7');
+      grad.addColorStop(0, r.waterColorCore);
+      grad.addColorStop(0.6, r.waterColorMid);
+      grad.addColorStop(1, r.waterColorEdge);
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.fillStyle = r.waterHighlightColor;
       ctx.beginPath();
       ctx.arc(pos.x - radius * 0.35, pos.y - radius * 0.35, radius * 0.25, 0, Math.PI * 2);
       ctx.fill();
     }
   };
 
-  const drawSource = (ctx: CanvasRenderingContext2D) => {
-    const level = getLevelById(levelId);
-    if (!level) return;
-    const src = level.waterSource;
+  const drawSource = (ctx: CanvasRenderingContext2D, resolved: ResolvedLevelConfig) => {
+    const src = resolved.waterSource;
+    const r = resolved.render;
 
     ctx.save();
     const pipeGrad = ctx.createLinearGradient(src.x - 30, src.y - 40, src.x + 30, src.y + 20);
-    pipeGrad.addColorStop(0, '#64748b');
-    pipeGrad.addColorStop(1, '#334155');
+    pipeGrad.addColorStop(0, r.sourcePipeColorStart);
+    pipeGrad.addColorStop(1, r.sourcePipeColorEnd);
     ctx.fillStyle = pipeGrad;
-    ctx.strokeStyle = '#1e293b';
+    ctx.strokeStyle = r.sourcePipeBorderColor;
     ctx.lineWidth = 2;
     roundRect(ctx, src.x - 32, src.y - 42, 64, 48, 10);
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = '#0ea5e9';
+    ctx.fillStyle = r.sourceDropColor;
     ctx.beginPath();
     ctx.ellipse(src.x, src.y + 6, 18, 6, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -478,50 +490,47 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
     ctx.restore();
   };
 
-  const drawDrawnSegments = (ctx: CanvasRenderingContext2D) => {
+  const drawDrawnSegments = (ctx: CanvasRenderingContext2D, resolved: ResolvedLevelConfig) => {
     const drawing = drawingRef.current;
     if (!drawing) return;
     const segments = drawing.getSegments();
+    const r = resolved.render;
 
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (const seg of segments) {
       const pts = seg.points;
       if (pts.length < 2) continue;
-      ctx.strokeStyle = 'rgba(31, 41, 55, 0.35)';
-      ctx.lineWidth = 14;
+      ctx.strokeStyle = hexToRgba(r.drawnLineShadowColor, r.drawnLineShadowOpacity);
+      ctx.lineWidth = r.drawnLineShadowThickness;
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y + 2);
-      for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(pts[i].x, pts[i].y + 2);
-      }
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y + 2);
       ctx.stroke();
 
-      ctx.strokeStyle = '#1f2937';
-      ctx.lineWidth = 11;
+      ctx.strokeStyle = r.drawnLineColor;
+      ctx.lineWidth = r.drawnLineRenderThickness;
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(pts[i].x, pts[i].y);
-      }
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
       ctx.stroke();
 
-      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-      ctx.lineWidth = 4;
+      ctx.strokeStyle = r.drawnLineHighlightColor;
+      ctx.lineWidth = r.drawnLineHighlightThickness;
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y - 1.5);
-      for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(pts[i].x, pts[i].y - 1.5);
-      }
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y - 1.5);
       ctx.stroke();
     }
   };
 
-  const drawPreviewStroke = (ctx: CanvasRenderingContext2D) => {
+  const drawPreviewStroke = (ctx: CanvasRenderingContext2D, resolved: ResolvedLevelConfig) => {
     const drawing = drawingRef.current;
     if (!drawing) return;
     const pts = previewPoints;
     if (pts.length < 1) return;
+    const r = resolved.render;
+    const d = resolved.drawing;
 
     const currentTool = drawing.getTool();
     if (currentTool === 'eraser') {
@@ -532,7 +541,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
         ctx.lineWidth = 2;
         ctx.setLineDash([6, 4]);
         ctx.beginPath();
-        ctx.arc(last.x, last.y, 22, 0, Math.PI * 2);
+        ctx.arc(last.x, last.y, d.eraserRadius, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         ctx.setLineDash([]);
@@ -541,7 +550,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
     }
 
     if (pts.length < 2) {
-      ctx.fillStyle = '#1f2937';
+      ctx.fillStyle = r.drawnLineColor;
       ctx.beginPath();
       ctx.arc(pts[0].x, pts[0].y, 5, 0, Math.PI * 2);
       ctx.fill();
@@ -549,42 +558,39 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
     }
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = '#1f2937';
-    ctx.lineWidth = 11;
+    ctx.strokeStyle = r.drawnLineColor;
+    ctx.lineWidth = r.drawnLineRenderThickness;
     ctx.globalAlpha = 0.8;
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i].x, pts[i].y);
-    }
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.stroke();
     ctx.globalAlpha = 1;
   };
 
-  const drawHoldIndicator = (ctx: CanvasRenderingContext2D) => {
-    const level = getLevelById(levelId);
-    if (!level) return;
+  const drawHoldIndicator = (ctx: CanvasRenderingContext2D, resolved: ResolvedLevelConfig) => {
     const holdProg = useGameStore.getState().holdProgress;
     if (holdProg <= 0) return;
-    const cx = level.worldWidth / 2;
-    const cy = 50;
+    const r = resolved.render;
+    const cx = resolved.worldWidth / 2;
+    const cy = r.holdIndicatorY;
     ctx.save();
-    const w = 300;
-    const h = 12;
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    const w = r.holdIndicatorWidth;
+    const h = r.holdIndicatorHeight;
+    ctx.fillStyle = r.holdIndicatorBgColor;
     roundRect(ctx, cx - w / 2, cy - h / 2, w, h, 6);
     ctx.fill();
     const grad = ctx.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
-    grad.addColorStop(0, '#10b981');
-    grad.addColorStop(1, '#34d399');
+    grad.addColorStop(0, r.holdIndicatorStartColor);
+    grad.addColorStop(1, r.holdIndicatorEndColor);
     ctx.fillStyle = grad;
     roundRect(ctx, cx - w / 2, cy - h / 2, w * holdProg, h, 6);
     ctx.fill();
-    ctx.strokeStyle = '#059669';
+    ctx.strokeStyle = r.holdIndicatorBorderColor;
     ctx.lineWidth = 1.5;
     roundRect(ctx, cx - w / 2, cy - h / 2, w, h, 6);
     ctx.stroke();
-    ctx.fillStyle = '#065f46';
+    ctx.fillStyle = r.holdIndicatorTextColor;
     ctx.font = 'bold 13px "Noto Sans SC", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -593,10 +599,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
   };
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-full flex items-center justify-center"
-    >
+    <div ref={containerRef} className="w-full h-full flex items-center justify-center">
       <canvas
         ref={canvasRef}
         style={{
@@ -645,4 +648,13 @@ function shadeColor(color: string, percent: number): string {
   const g = Math.max(0, Math.min(255, ((num >> 8) & 0x00ff) + percent));
   const b = Math.max(0, Math.min(255, (num & 0x0000ff) + percent));
   return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const num = parseInt(h, 16);
+  const r = (num >> 16) & 0xff;
+  const g = (num >> 8) & 0xff;
+  const b = num & 0xff;
+  return `rgba(${r},${g},${b},${alpha})`;
 }
