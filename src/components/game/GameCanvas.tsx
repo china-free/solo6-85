@@ -173,6 +173,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
           fail('时间耗尽');
         }
 
+        engineRef.current?.step(dtMs);
         waterRef.current?.update(dt);
         const activeIds = new Set(waterRef.current?.getActiveParticleIds() ?? []);
         containerSysRef.current?.update(dt, activeIds);
@@ -488,7 +489,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
       const pts = seg.points;
       if (pts.length < 2) continue;
       ctx.strokeStyle = 'rgba(31, 41, 55, 0.35)';
-      ctx.lineWidth = 12;
+      ctx.lineWidth = 14;
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y + 2);
       for (let i = 1; i < pts.length; i++) {
@@ -497,7 +498,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
       ctx.stroke();
 
       ctx.strokeStyle = '#1f2937';
-      ctx.lineWidth = 9;
+      ctx.lineWidth = 11;
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
       for (let i = 1; i < pts.length; i++) {
@@ -505,8 +506,8 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
       }
       ctx.stroke();
 
-      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y - 1.5);
       for (let i = 1; i < pts.length; i++) {
@@ -549,7 +550,7 @@ export function GameCanvas({ levelId }: GameCanvasProps) {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = '#1f2937';
-    ctx.lineWidth = 9;
+    ctx.lineWidth = 11;
     ctx.globalAlpha = 0.8;
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);

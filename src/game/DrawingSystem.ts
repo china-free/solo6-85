@@ -3,7 +3,6 @@ import { PhysicsEngine } from './PhysicsEngine';
 
 const MIN_DISTANCE = 6;
 const MIN_SEGMENT_LENGTH = 20;
-const LINE_THICKNESS = 7;
 
 export class DrawingSystem {
   private engine: PhysicsEngine;
@@ -135,7 +134,7 @@ export class DrawingSystem {
 
   private commitCurrentStroke() {
     const points = [...this.currentPoints];
-    const { bodyIds, length } = this.engine.createDrawnLineBodies(points, LINE_THICKNESS);
+    const { bodyIds, length } = this.engine.createDrawnLineBodies(points);
     if (bodyIds.length > 0) {
       const segment: DrawnSegment = {
         id: `seg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,

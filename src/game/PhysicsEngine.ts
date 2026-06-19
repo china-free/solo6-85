@@ -21,6 +21,10 @@ export class PhysicsEngine {
   level: LevelConfig;
   private nextBodyId: number;
   private waterIdCounter: number;
+  readonly DRAWN_THICKNESS = 10;
+  private staticBodyCache: Matter.Body[] | null = null;
+  private readonly MAX_SUB_STEP_MS = 2;
+  private readonly MAX_WATER_SPEED = 14;
 
   constructor(level: LevelConfig) {
     this.level = level;
@@ -40,27 +44,129 @@ export class PhysicsEngine {
         scale: 0.001,
       },
       enableSleeping: false,
+      positionIterations: 16,
+      velocityIterations: 10,
+      constraintIterations: 4,
     });
     this.world = this.engine.world;
     this.world.bounds = {
       min: { x: 0, y: 0 },
       max: { x: level.worldWidth, y: level.worldHeight },
     };
-    this.runner = Matter.Runner.create();
+    this.runner = Matter.Runner.create({});
   }
 
   start() {
-    Matter.Runner.run(this.runner, this.engine);
   }
 
   stop() {
-    Matter.Runner.stop(this.runner);
+  }
+
+  step(dtMs: number) {
+    this.staticBodyCache = null;
+    const actualDt = Math.min(50, dtMs);
+
+    if (actualDt <= this.MAX_SUB_STEP_MS) {
+      this.singleStep(actualDt);
+      return;
+    }
+
+    const numSubSteps = Math.ceil(actualDt / this.MAX_SUB_STEP_MS);
+    const subDt = actualDt / numSubSteps;
+    for (let i = 0; i < numSubSteps; i++) {
+      this.singleStep(subDt);
+    }
+  }
+
+  private singleStep(dtMs: number) {
+    const prevPositions = new Map<number, { x: number; y: number }>();
+    for (const [id, body] of this.objects.waterBodies.entries()) {
+      prevPositions.set(id, { x: body.position.x, y: body.position.y });
+      const speed = Math.hypot(body.velocity.x, body.velocity.y);
+      if (speed > this.MAX_WATER_SPEED) {
+        const k = this.MAX_WATER_SPEED / speed;
+        Matter.Body.setVelocity(body, {
+          x: body.velocity.x * k,
+          y: body.velocity.y * k,
+        });
+      }
+    }
+
+    Matter.Engine.update(this.engine, dtMs);
+    this.performCCD(prevPositions);
+  }
+
+  private getStaticBodiesForCCD(): Matter.Body[] {
+    if (this.staticBodyCache) return this.staticBodyCache;
+    const result: Matter.Body[] = [];
+    for (const b of this.objects.obstacleBodies) result.push(b);
+    for (const b of this.objects.containerBodies) result.push(b);
+    for (const [, b] of this.objects.drawnBodies) result.push(b);
+    this.staticBodyCache = result;
+    return result;
+  }
+
+  private performCCD(prevPositions: Map<number, { x: number; y: number }>) {
+    const staticBodies = this.getStaticBodiesForCCD();
+    if (staticBodies.length === 0) return;
+
+    for (const [id, body] of this.objects.waterBodies.entries()) {
+      const prev = prevPositions.get(id);
+      if (!prev) continue;
+
+      const dx = body.position.x - prev.x;
+      const dy = body.position.y - prev.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < this.DRAWN_THICKNESS * 0.5) continue;
+
+      const radius = body.circleRadius || 4;
+      const paddedRadius = radius + this.DRAWN_THICKNESS * 0.6;
+
+      const collisions = Matter.Query.ray(
+        staticBodies,
+        prev,
+        body.position,
+        paddedRadius
+      );
+
+      if (collisions.length === 0) continue;
+
+      let bestT = Infinity;
+      let bestBody: Matter.Body | null = null;
+      for (const col of collisions) {
+        const t = (col as any).t as number;
+        if (t !== undefined && t < bestT) {
+          bestT = t;
+          bestBody = col.bodyA;
+        }
+      }
+
+      if (!bestBody || !isFinite(bestT)) continue;
+
+      const hitT = Math.max(0, Math.min(0.9, bestT - 0.02));
+      const newX = prev.x + dx * hitT;
+      const newY = prev.y + dy * hitT;
+
+      Matter.Body.setPosition(body, { x: newX, y: newY });
+
+      const nx = dx / (dist || 1);
+      const ny = dy / (dist || 1);
+      const vn = body.velocity.x * nx + body.velocity.y * ny;
+      if (vn < 0) {
+        const e = 0.35;
+        Matter.Body.setVelocity(body, {
+          x: body.velocity.x - (1 + e) * vn * nx,
+          y: body.velocity.y - (1 + e) * vn * ny,
+        });
+      }
+    }
   }
 
   destroy() {
     this.stop();
     Matter.World.clear(this.world, false);
     Matter.Engine.clear(this.engine);
+    this.staticBodyCache = null;
   }
 
   buildLevel() {
@@ -271,9 +377,10 @@ export class PhysicsEngine {
     return ids;
   }
 
-  createDrawnLineBodies(points: Vec2[], thickness: number = 6): { bodyIds: number[]; length: number } {
+  createDrawnLineBodies(points: Vec2[], thickness?: number): { bodyIds: number[]; length: number } {
     const bodyIds: number[] = [];
     let totalLength = 0;
+    const t = thickness ?? this.DRAWN_THICKNESS;
 
     for (let i = 0; i < points.length - 1; i++) {
       const p1 = points[i];
@@ -289,7 +396,7 @@ export class PhysicsEngine {
       const cy = (p1.y + p2.y) / 2;
 
       const id = this.nextBodyId++;
-      const body = Matter.Bodies.rectangle(cx, cy, length, thickness, {
+      const body = Matter.Bodies.rectangle(cx, cy, length, t, {
         angle,
         isStatic: true,
         friction: 0.4,
